@@ -4,111 +4,62 @@ import random
 import time
 import os
 import pickle
+from model import Model
 
-def softmax(X, theta = 1.0, axis = None):
-    """
-    Compute the softmax of each element along an axis of X.
-
-    Parameters
-    ----------
-    X: ND-Array. Probably should be floats. 
-    theta (optional): float parameter, used as a multiplier
-        prior to exponentiation. Default = 1.0
-    axis (optional): axis to compute values along. Default is the 
-        first non-singleton axis.
-
-    Returns an array the same size as X. The result will sum to 1
-    along the specified axis.
-    """
-
-    # make X at least 2d
-    y = np.atleast_2d(X)
-
-    # find axis
-    if axis is None:
-        axis = next(j[0] for j in enumerate(y.shape) if j[1] > 1)
-
-    # multiply y against the theta parameter, 
-    y = y * float(theta)
-
-    # subtract the max for numerical stability
-    y = y - np.expand_dims(np.max(y, axis = axis), axis)
-    
-    # exponentiate y
-    y = np.exp(y)
-
-    # take the sum along the specified axis
-    ax_sum = np.expand_dims(np.sum(y, axis = axis), axis)
-
-    # finally: divide elementwise
-    p = y / ax_sum
-
-    # flatten if X was 1D
-    if len(X.shape) == 1: p = p.flatten()
-
-    return p
-
+""" MCTS Node. Contains information about expected game value, policy probabilities, and visit counts. """
 class Node:
     def __init__(self, board, parent=None, action=None, prob=None):
         self.parent = parent
+        # action taken to get to this node
         self.action = action
         self.num_visits = 0
         self.total_value = 0
         self.average_value = 0
         self.children = {}
+        # policy probabilities for all children
+        # cache if multiple children get expanded - can reuse
         self.children_probs = None
-
-        self.is_leaf = True
-
+        # policy probability for this move
         self.prob = prob
-
-        self.turn = board.turn
         self.over = board.is_game_over()
         self.possible_actions = board.moves()
 
-
+    """ In the selection (tree-traversal) phase of MCTS, choose the action that yields the largest selection_criterion """
     def selection_criterion(self, turn_parity, t, N):
         p = self.prob if self.prob is not None else 0
-        # if t > 10:
-        #     p = 0
         s = turn_parity * self.average_value + 1.0 * np.sqrt(N) * p / (1 + self.num_visits)
         return s
 
+    """ For use in the selection phase of MCTS """
     def select(self, turn_parity, t):
         N = sum(self.children[i].num_visits for i in self.children)
         return self.children[max(self.children, key=lambda i: self.children[i].selection_criterion(turn_parity, t, N))]
 
+    """ For use in the expansion phase of MCTS """
     def add_child(self, action, board, prob):
         self.children[action] = Node(board, parent=self, action=action, prob=prob)
         return self.children[action]
 
+    """ For use in the backpropagation phase of MCTS """
     def update(self, value):
         self.total_value += value
         self.num_visits += 1
         self.average_value = self.total_value / self.num_visits
 
-    # def reset(self):
-    #     self.num_visits = 0
-    #     self.total_value = 0
-    #     self.average_value = 0
-    #     for action in self.children:
-    #         self.children[action].reset()
+""" Connect Four Board with AlphaZero/MCTS movemaking routines. """
 class Board:
     def __init__(self):
         self.width = 7
         self.height = 6
 
         self.state = np.zeros(shape=(self.width, self.height), dtype=np.int64)
-        self.value = 0
         self.turn = 0
 
         self.root = None
         self.board_probabilities = {}
 
+    """ If possible, perform a move in the move space. If not possible, return -1. """
     def make_move(self, action):
-        # if action in self.actions:
-        #     self = copy.copy(self.actions[action].child)
-        # else:
         h = 0
         while self.state[action, h] != 0:
             h += 1
@@ -129,6 +80,8 @@ class Board:
             return []
         return list(filter(lambda i: self.state[i, -1] == 0, list(range(self.width))))
 
+    """ Check if the game is over. If so, return 1 if player 1 wins, -1 if player -1 wins, and 0 if a draw occurs.
+    Otherwise, return None."""
     def is_game_over(self):
         # only need to check current player
 
@@ -206,7 +159,10 @@ class Board:
     def print(self):
         print(np.transpose(self.state[:,::-1]))
 
-    def expand(self, model, num_iterations=64, reuse_root=False, noise=False):
+    """ Perform a single iteration of MCTS. Involves first selecting for the most promising sequence of moves, 
+        expanding the game tree by a single node, and backpropagating the value of that state (using either the game
+        result or the value head of the model) """ 
+    def step(self, model, num_iterations=64, reuse_root=False, noise=False):
         if self.root is None:
             self.root = Node(board=self)
 
@@ -234,6 +190,7 @@ class Board:
                 board.make_move(action)
                 node = node.add_child(action, board, np.float(node.children_probs[0, idx]))
             
+            # MCTS Rollout
             # while board.is_game_over() is None:
             #     prob, _ = model.predict(np.expand_dims(board.training_state(), axis=0))
             #     prob = prob[0]
@@ -244,9 +201,7 @@ class Board:
                 policy_probs, value = model.predict(np.expand_dims(board.training_state(), axis=0))
                 node.children_probs = policy_probs
                 value *= board.get_player_piece()
-            # if node.over is not None:
             while node is not None:
-                # print('updating')
                 node.update(value)
                 node = node.parent
 
@@ -260,8 +215,9 @@ class Board:
         return probs
 
     def play(self, model):
-        self.make_move(np.argmax(self.expand(model, num_iterations=200)))
+        self.make_move(np.argmax(self.step(model, num_iterations=200)))
 
+    """ Tensor state to be passed to NN model """
     def training_state(self):
         s = self.get_player_piece() * self.state
         white = s.astype(np.float32)
@@ -269,23 +225,22 @@ class Board:
         black = s.astype(np.float32)
         black[black > 0] = 0
         black *= -1
-        # turn = np.full_like(white, self.get_player_piece())
+        # like AlphaZero paper: use an entire channel to indicate who's the current player
+        # for simplicity, we model connect4 as a symmetric game
+        # therefore, we can just flip all the pieces fed into the evaluation/policy NN
+        # turn = np.full_like(white, self.get_player_piece()) 
         return np.array([white, black]).transpose([1,2,0])
 
+    """ Perform a single game of self-play and return intermediate game states, MCTS probs, and the game result."""
     def self_play_game(self, model):
-
         states = []
         probs = []
         players = []
         while self.is_game_over() is None:
             states.append(self.training_state())
             players.append(self.get_player_piece())
-            p = self.expand(model, reuse_root=True, noise=True)
+            p = self.step(model, reuse_root=True, noise=True)
             self.print()
-            # print(self.training_state().transpose([2,0,1]))
-            # print('probs',p)
-            # p *= p
-            # p *= p #use a lower temperature (0.25=1/4)
             p/=np.sum(p)
             probs.append(p)
             if self.turn > 10:
@@ -293,25 +248,36 @@ class Board:
             else:
                 self.make_move(np.random.choice(p.shape[0], p=p))
 
-        if self.is_game_over() == 1:
+        game_over = self.is_game_over()
+        if game_over == 1:
             print('white wins!')
+        elif game_over == -1:
+            print('black wins!')
         else:
-            print('black/draw wins!')
+            print('draw!')
         value = np.float(self.is_game_over())
         return np.array(states), np.array(probs), value * np.expand_dims(np.array(players), axis=1)
 
+    """ Save training data to disk. """
     def save_game(self, model, data_dir='data'):
         with open(os.path.join(data_dir, str(time.time()) + '.pkl'), 'wb') as file:
             pickle.dump(self.self_play_game(model), file)
-        
+    
+    """ Play two models against each other for evaluation purposes. 
+        Returns a positive number if model2 beats model1 on average, negative if model1 beats model2. """
     def compare_models(self, model, model1, model2, games=30):
         value = 0
+        model = Model(self.width, self.height)
         for i in range(games):
             board = Board()
+            # TODO: load two models simultaneously while playing one model against another
+            # requires some tensorflow magic
             while board.is_game_over() is None:
                 name = model1 if (i + self.turn) % 2 == 0 else model2
                 model.restore_from_file(name)
-                p = board.expand(model, reuse_root=False)
+                p = board.step(model, reuse_root=False)
+                # introduce some randomness into move-making process to get a 
+                # diverse comparison of the two models
                 board.make_move(np.random.choice(p.shape[0], p=p))
             win = board.is_game_over()
             if i % 2 == 0:

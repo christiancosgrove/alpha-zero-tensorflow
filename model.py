@@ -6,7 +6,7 @@ import pickle
 import time
 
 class Model:
-    def __init__(self, width, height, sess=None, gpu_usage=None):
+    def __init__(self, width, height, sess=None):
         self.width = width
         self.height = height
 
@@ -58,8 +58,7 @@ class Model:
             self.minimize_op = tf.train.AdamOptimizer(learning_rate=1e-3).minimize(self.loss)
             # self.minimize_op = tf.train.AdamOptimizer(learning_rate=1e-3, beta1=0.5, beta2=0.9).minimize(self.loss)
 
-        # if gpu_usage is not None:
-        gpu_options = tf.GPUOptions(allow_growth=True)#per_process_gpu_memory_fraction=gpu_usage)
+        gpu_options = tf.GPUOptions(allow_growth=True)
 
         if sess is None:
             self.sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_options))

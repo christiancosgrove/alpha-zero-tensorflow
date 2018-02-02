@@ -13,7 +13,7 @@ args = parser.parse_args()
 
 def main():
     if args.play:
-        m = model.Model(7, 6, gpu_usage=0.1)
+        m = model.Model(7, 6)
         m.restore()
         g = connect_four.Board()
         i = 0
@@ -32,7 +32,7 @@ def main():
         print("Winner is ", g.is_game_over())
     else:
         if not args.train:
-            m = model.Model(7, 6, gpu_usage=0.1)
+            m = model.Model(7, 6)
             for t in range(200):
                 if not args.assist:
                     files = sorted(os.listdir('data'))
@@ -48,11 +48,7 @@ def main():
                     m.restore()
                     for game in range(100):
                         g = connect_four.Board()
-                        # print('self play game')
                         g.save_game(m)
-                        # states, probs, values = g.self_play_game(m)
-                        # m.add_data(states, probs, values)
-                        # print('buffer size', m.curr_buffer_position)
         else: 
             m = model.Model(7, 6)
             if args.load:
